@@ -1,445 +1,447 @@
 
+import os
 import sqlite3
+import logging
+from pathlib import Path
 from functools import wraps
-from flask import Flask, request, redirect, session, flash, render_template_string
+
+from flask import (
+    Flask, request, redirect, session,
+    flash, render_template_string, url_for
+)
 from werkzeug.security import generate_password_hash, check_password_hash
 from markupsafe import escape
 
+# CONFIGURAÇÃO
 app = Flask(__name__)
-app.secret_key = "troque-por-uma-chave-secreta"
+app.secret_key = os.environ.get(
+    "SECRET_KEY",
+    "chave-temporaria-troque-no-render"
+)
 
-BANCO = "boletim.db"
+BASE_DIR = Path(__file__).resolve().parent
+BANCO = Path(os.environ.get("DATABASE_PATH", str(BASE_DIR / "boletim.db")))
 
-# PERSONALIZE SEUS DADOS
-CHAVE_PIX = "COLOQUE_SUA_CHAVE_PIX"
-NOME_PIX = "SEU NOME"
-VALOR = "10,00"
-SENHA_ADMIN = "Jotta@123"
+logging.basicConfig(level=logging.INFO)
 
 
+# BANCO DE DADOS
 def conectar():
-    banco = sqlite3.connect(BANCO)
-    banco.row_factory = sqlite3.Row
-    return banco
+    BANCO.parent.mkdir(parents=True, exist_ok=True)
+    conexao = sqlite3.connect(str(BANCO), timeout=20)
+    conexao.row_factory = sqlite3.Row
+    return conexao
 
 
 def criar_banco():
-    with conectar() as banco:
-        banco.execute("""
+    with conectar() as db:
+        db.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                senha TEXT NOT NULL
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS materias (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usuario_id INTEGER NOT NULL,
                 nome TEXT NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                senha TEXT NOT NULL,
-                status TEXT DEFAULT 'pendente',
-                comprovante TEXT
+                trimestre INTEGER NOT NULL,
+                nota REAL NOT NULL,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
             )
         """)
 
 
+# Inicializa o banco quando o Gunicorn importa o aplicativo.
+criar_banco()
+
+
+@app.before_request
+def garantir_banco():
+    # Também verifica a existência das tabelas antes de cada requisição.
+    criar_banco()
+
+
+# FUNÇÕES AUXILIARES
 def usuario_atual():
-    if "usuario" not in session:
+    usuario_id = session.get("usuario_id")
+
+    if not usuario_id:
         return None
 
-    with conectar() as banco:
-        return banco.execute(
-            "SELECT * FROM usuarios WHERE id = ?",
-            (session["usuario"],)
+    with conectar() as db:
+        return db.execute(
+            "SELECT id, email FROM usuarios WHERE id = ?",
+            (usuario_id,)
         ).fetchone()
 
 
 def proteger(funcao):
     @wraps(funcao)
     def verificar(*args, **kwargs):
-        if not usuario_atual():
-            return redirect("/login")
-        return funcao(*args, **kwargs)
-    return verificar
-
-
-def liberar(funcao):
-    @wraps(funcao)
-    def verificar(*args, **kwargs):
-        usuario = usuario_atual()
-
-        if not usuario:
-            return redirect("/login")
-
-        if usuario["status"] != "aprovado":
-            return redirect("/pagamento")
+        if not session.get("usuario_id"):
+            flash("Faça login para acessar o sistema.")
+            return redirect(url_for("login"))
 
         return funcao(*args, **kwargs)
+
     return verificar
 
 
 def pagina(titulo, conteudo):
     usuario = usuario_atual()
 
-    menu = """
-    <a href="/">Início</a>
-    <a href="/criar-conta">Criar conta</a>
-    <a href="/login">Login</a>
-    """
+    menu = ""
 
     if usuario:
         menu = """
-        <a href="/boletim">Meu boletim</a>
-        <a href="/sair">Sair</a>
+        <nav>
+            <a href="/boletim">Meu boletim</a>
+            <a href="/sair">Sair</a>
+        </nav>
         """
 
     return render_template_string("""
     <!DOCTYPE html>
     <html lang="pt-br">
     <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ titulo }} - Meu Boletim</title>
-    <style>
-    * { box-sizing: border-box; }
-    body {
-        margin: 0;
-        background: #f1f4fa;
-        font-family: Arial, sans-serif;
-        color: #18233a;
-    }
-    header {
-        background: #101b35;
-        color: white;
-        padding: 22px 8%;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 15px;
-    }
-    header strong { font-size: 22px; }
-    header a {
-        color: white;
-        text-decoration: none;
-        margin-left: 15px;
-    }
-    main {
-        max-width: 750px;
-        margin: 55px auto;
-        padding: 0 18px;
-    }
-    .card {
-        background: white;
-        padding: 35px;
-        border-radius: 18px;
-        box-shadow: 0 8px 30px #00000010;
-    }
-    h1 { font-size: 30px; }
-    p { color: #647087; line-height: 1.6; }
-    input, textarea {
-        width: 100%;
-        padding: 14px;
-        border: 1px solid #d9dfeb;
-        border-radius: 9px;
-        margin: 8px 0 18px;
-        font-size: 15px;
-    }
-    label { font-weight: bold; }
-    button, .botao {
-        display: inline-block;
-        background: #315efb;
-        color: white;
-        padding: 14px 20px;
-        border: none;
-        border-radius: 9px;
-        text-decoration: none;
-        cursor: pointer;
-        font-weight: bold;
-    }
-    .pix {
-        background: #f0f3ff;
-        padding: 18px;
-        border-radius: 12px;
-        overflow-wrap: anywhere;
-    }
-    .mensagem {
-        background: #fff1c9;
-        padding: 13px;
-        border-radius: 9px;
-        margin-bottom: 15px;
-    }
-    table { width: 100%; border-collapse: collapse; }
-    td, th {
-        padding: 10px;
-        border-bottom: 1px solid #ddd;
-        text-align: left;
-    }
-    </style>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{{ titulo }}</title>
+        <style>
+            * { box-sizing: border-box; }
+
+            body {
+                margin: 0;
+                padding: 20px;
+                background: #101827;
+                color: white;
+                font-family: Arial, sans-serif;
+            }
+
+            main {
+                max-width: 850px;
+                margin: 35px auto;
+                background: #1e293b;
+                padding: 25px;
+                border-radius: 15px;
+            }
+
+            h1, h2 { color: #60a5fa; }
+
+            input, select, button {
+                width: 100%;
+                padding: 13px;
+                margin: 8px 0;
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+            }
+
+            button {
+                background: #2563eb;
+                color: white;
+                cursor: pointer;
+                font-weight: bold;
+            }
+
+            button:hover { background: #1d4ed8; }
+
+            a { color: #93c5fd; }
+
+            nav {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 25px;
+            }
+
+            .aviso {
+                background: #334155;
+                padding: 12px;
+                border-radius: 8px;
+                margin: 10px 0;
+            }
+
+            .materia {
+                background: #334155;
+                padding: 15px;
+                margin: 10px 0;
+                border-radius: 8px;
+            }
+
+            .pequeno { color: #cbd5e1; font-size: 14px; }
+        </style>
     </head>
     <body>
-    <header>
-        <strong>MEU BOLETIM</strong>
-        <nav>{{ menu|safe }}</nav>
-    </header>
-    <main>
-        {% for mensagem in get_flashed_messages() %}
-            <div class="mensagem">{{ mensagem }}</div>
-        {% endfor %}
-        {{ conteudo|safe }}
-    </main>
+        <main>
+            {{ menu|safe }}
+
+            {% for mensagem in get_flashed_messages() %}
+                <div class="aviso">{{ mensagem }}</div>
+            {% endfor %}
+
+            {{ conteudo|safe }}
+        </main>
     </body>
     </html>
     """, titulo=titulo, conteudo=conteudo, menu=menu)
 
 
+# PÁGINA INICIAL
 @app.route("/")
 def inicio():
-    if usuario_atual():
-        usuario = usuario_atual()
-        if usuario["status"] == "aprovado":
-            return redirect("/boletim")
-        return redirect("/pagamento")
+    if session.get("usuario_id"):
+        return redirect(url_for("boletim"))
 
-    return pagina("Início", """
-    <div class="card">
-        <h1>Bem-vindo ao Meu Boletim!</h1>
-        <p>Organize suas notas escolares em um só lugar.</p>
-        <a class="botao" href="/criar-conta">CRIAR CONTA</a>
-        <a class="botao" href="/login">FAZER LOGIN</a>
-    </div>
-    """)
+    return redirect(url_for("login"))
 
 
+# CRIAR CONTA
 @app.route("/criar-conta", methods=["GET", "POST"])
 def criar_conta():
     if request.method == "POST":
-        nome = request.form["nome"].strip()
-        email = request.form["email"].strip().lower()
-        senha = request.form["senha"]
+        email = request.form.get("email", "").strip().lower()
+        senha = request.form.get("senha", "")
 
-        if not nome or len(senha) < 6:
-            flash("Preencha os campos. A senha deve ter pelo menos 6 caracteres.")
-        else:
-            try:
-                with conectar() as banco:
-                    cursor = banco.execute("""
-                        INSERT INTO usuarios (nome, email, senha)
-                        VALUES (?, ?, ?)
-                    """, (nome, email, generate_password_hash(senha)))
+        if not email or not senha:
+            flash("Preencha todos os campos.")
+            return redirect(url_for("criar_conta"))
 
-                    session["usuario"] = cursor.lastrowid
+        if len(senha) < 6:
+            flash("A senha precisa ter pelo menos 6 caracteres.")
+            return redirect(url_for("criar_conta"))
 
-                return redirect("/pagamento")
+        senha_hash = generate_password_hash(senha)
 
-            except sqlite3.IntegrityError:
-                flash("Este e-mail já está cadastrado.")
+        try:
+            with conectar() as db:
+                cursor = db.execute(
+                    "INSERT INTO usuarios (email, senha) VALUES (?, ?)",
+                    (email, senha_hash)
+                )
+                usuario_id = cursor.lastrowid
 
-    return pagina("Criar conta", """
-    <div class="card">
-        <h1>Criar minha conta</h1>
+            session.clear()
+            session["usuario_id"] = usuario_id
+
+            return redirect(url_for("boletim"))
+
+        except sqlite3.IntegrityError:
+            flash("Esse e-mail já possui uma conta.")
+            return redirect(url_for("login"))
+
+        except Exception:
+            app.logger.exception("Erro ao criar conta")
+            flash("Não foi possível criar sua conta. Tente novamente.")
+            return redirect(url_for("criar_conta"))
+
+    conteudo = """
+        <h1>Criar conta</h1>
+        <p>Crie sua conta gratuitamente para acessar seu boletim.</p>
+
         <form method="POST">
-            <label>Nome completo</label>
-            <input name="nome" required>
+            <input type="email" name="email"
+                placeholder="Seu e-mail" required>
 
-            <label>E-mail</label>
-            <input name="email" type="email" required>
+            <input type="password" name="senha"
+                placeholder="Crie uma senha" minlength="6" required>
 
-            <label>Senha</label>
-            <input name="senha" type="password" minlength="6" required>
-
-            <button>Cadastrar e continuar</button>
+            <button type="submit">Criar minha conta</button>
         </form>
-        <p>Já possui conta? <a href="/login">Entre aqui</a>.</p>
-    </div>
-    """)
+
+        <p>Já tem uma conta? <a href="/login">Fazer login</a></p>
+    """
+
+    return pagina("Criar conta", conteudo)
 
 
+# LOGIN
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == "POST":
-        email = request.form["email"].strip().lower()
-        senha = request.form["senha"]
-
-        with conectar() as banco:
-            usuario = banco.execute(
-                "SELECT * FROM usuarios WHERE email = ?", (email,)
-            ).fetchone()
-
-        if usuario and check_password_hash(usuario["senha"], senha):
-            session["usuario"] = usuario["id"]
-
-            if usuario["status"] == "aprovado":
-                return redirect("/boletim")
-
-            return redirect("/pagamento")
-
-        flash("E-mail ou senha incorretos.")
-
-    return pagina("Login", """
-    <div class="card">
-        <h1>Entrar na minha conta</h1>
-        <form method="POST">
-            <label>E-mail</label>
-            <input name="email" type="email" required>
-
-            <label>Senha</label>
-            <input name="senha" type="password" required>
-
-            <button>ENTRAR</button>
-        </form>
-        <p>Não tem conta? <a href="/criar-conta">Cadastre-se</a>.</p>
-    </div>
-    """)
-
-
-@app.route("/pagamento", methods=["GET", "POST"])
-@proteger
-def pagamento():
-    usuario = usuario_atual()
-
-    if usuario["status"] == "aprovado":
-        return redirect("/boletim")
+    if session.get("usuario_id"):
+        return redirect(url_for("boletim"))
 
     if request.method == "POST":
-        comprovante = request.form["comprovante"].strip()
+        email = request.form.get("email", "").strip().lower()
+        senha = request.form.get("senha", "")
 
-        if comprovante:
-            with conectar() as banco:
-                banco.execute("""
-                    UPDATE usuarios
-                    SET comprovante = ?, status = 'em análise'
-                    WHERE id = ?
-                """, (comprovante, usuario["id"]))
+        if not email or not senha:
+            flash("Preencha o e-mail e a senha.")
+            return redirect(url_for("login"))
 
-            flash("Comprovante enviado! Aguarde a aprovação.")
-            return redirect("/pagamento")
+        try:
+            with conectar() as db:
+                usuario = db.execute(
+                    "SELECT id, email, senha FROM usuarios WHERE email = ?",
+                    (email,)
+                ).fetchone()
 
-    return pagina("Pagamento", f"""
-    <div class="card">
-        <h1>Pagamento</h1>
-        <p>Para liberar seu acesso, realize o pagamento via Pix.</p>
+            if usuario and check_password_hash(usuario["senha"], senha):
+                session.clear()
+                session["usuario_id"] = usuario["id"]
+                return redirect(url_for("boletim"))
 
-        <div class="pix">
-            <h2>R$ {VALOR}</h2>
-            <p><strong>Chave Pix:</strong> {escape(CHAVE_PIX)}</p>
-            <p><strong>Recebedor:</strong> {escape(NOME_PIX)}</p>
-        </div>
+            flash("E-mail ou senha incorretos.")
+            return redirect(url_for("login"))
 
-        <p>Status: <strong>{escape(usuario["status"])}</strong></p>
+        except Exception:
+            app.logger.exception("Erro ao realizar login")
+            flash("Erro ao entrar. Verifique os logs do servidor.")
+            return redirect(url_for("login"))
+
+    conteudo = """
+        <h1>Meu Boletim</h1>
+        <p>Entre na sua conta para acompanhar suas notas.</p>
 
         <form method="POST">
-            <label>Link ou identificação do comprovante</label>
-            <textarea name="comprovante" required
-            placeholder="Cole o link ou informe os dados do comprovante"></textarea>
-            <button>ENVIAR COMPROVANTE</button>
+            <input type="email" name="email"
+                placeholder="Seu e-mail" required>
+
+            <input type="password" name="senha"
+                placeholder="Sua senha" required>
+
+            <button type="submit">Entrar</button>
         </form>
 
-        <p>O administrador verificará o pagamento antes de liberar a conta.</p>
-    </div>
-    """)
+        <p>Ainda não tem conta?
+        <a href="/criar-conta">Criar conta grátis</a></p>
+    """
+
+    return pagina("Login", conteudo)
 
 
+# BOLETIM
 @app.route("/boletim")
-@liberar
+@proteger
 def boletim():
     usuario = usuario_atual()
 
-    return pagina("Meu boletim", f"""
-    <div class="card">
-        <h1>Olá, {escape(usuario["nome"])}!</h1>
-        <p>Sua conta foi aprovada.</p>
-        <h2>Meu boletim escolar</h2>
-        <p>Seu acesso está liberado. Aqui ficará seu controle de notas.</p>
-    </div>
-    """)
+    if not usuario:
+        session.clear()
+        return redirect(url_for("login"))
+
+    with conectar() as db:
+        materias = db.execute("""
+            SELECT id, nome, trimestre, nota
+            FROM materias
+            WHERE usuario_id = ?
+            ORDER BY trimestre, nome
+        """, (usuario["id"],)).fetchall()
+
+    conteudo = f"""
+        <h1>Meu boletim</h1>
+        <p>Bem-vindo, {escape(usuario["email"])}</p>
+
+        <h2>Adicionar matéria</h2>
+
+        <form method="POST" action="/adicionar-materia">
+            <input type="text" name="nome"
+                placeholder="Nome da matéria" required>
+
+            <select name="trimestre" required>
+                <option value="1">1º trimestre</option>
+                <option value="2">2º trimestre</option>
+                <option value="3">3º trimestre</option>
+            </select>
+
+            <input type="number" name="nota"
+                placeholder="Nota" min="0" max="100"
+                step="0.1" required>
+
+            <button type="submit">Adicionar matéria</button>
+        </form>
+
+        <h2>Minhas matérias</h2>
+    """
+
+    if not materias:
+        conteudo += "<p>Você ainda não adicionou nenhuma matéria.</p>"
+
+    for materia in materias:
+        conteudo += f"""
+            <div class="materia">
+                <strong>{escape(materia["nome"])}</strong>
+                <p>Trimestre: {materia["trimestre"]}º</p>
+                <p>Nota: {materia["nota"]}</p>
+                <form method="POST" action="/excluir-materia/{materia["id"]}">
+                    <button type="submit">Excluir matéria</button>
+                </form>
+            </div>
+        """
+
+    return pagina("Meu boletim", conteudo)
 
 
+# ADICIONAR MATÉRIA
+@app.route("/adicionar-materia", methods=["POST"])
+@proteger
+def adicionar_materia():
+    usuario = usuario_atual()
+
+    try:
+        nome = request.form.get("nome", "").strip()
+        trimestre = int(request.form.get("trimestre", ""))
+        nota = float(request.form.get("nota", ""))
+
+        if not nome or trimestre not in (1, 2, 3) or not 0 <= nota <= 100:
+            flash("Confira os dados informados.")
+            return redirect(url_for("boletim"))
+
+        with conectar() as db:
+            db.execute("""
+                INSERT INTO materias (usuario_id, nome, trimestre, nota)
+                VALUES (?, ?, ?, ?)
+            """, (usuario["id"], nome, trimestre, nota))
+
+        flash("Matéria adicionada com sucesso.")
+
+    except (ValueError, TypeError):
+        flash("Informe uma nota e um trimestre válidos.")
+
+    except Exception:
+        app.logger.exception("Erro ao adicionar matéria")
+        flash("Não foi possível adicionar a matéria.")
+
+    return redirect(url_for("boletim"))
+
+
+# EXCLUIR MATÉRIA
+@app.route("/excluir-materia/<int:materia_id>", methods=["POST"])
+@proteger
+def excluir_materia(materia_id):
+    usuario = usuario_atual()
+
+    with conectar() as db:
+        db.execute("""
+            DELETE FROM materias
+            WHERE id = ? AND usuario_id = ?
+        """, (materia_id, usuario["id"]))
+
+    flash("Matéria excluída.")
+    return redirect(url_for("boletim"))
+
+
+# SAIR DA CONTA
 @app.route("/sair")
 def sair():
     session.clear()
-    return redirect("/")
+    return redirect(url_for("login"))
 
 
-@app.route("/admin/login", methods=["GET", "POST"])
-def admin_login():
-    if request.method == "POST":
-        if request.form["senha"] == SENHA_ADMIN:
-            session["admin"] = True
-            return redirect("/admin")
-
-        flash("Senha incorreta.")
-
-    return pagina("Administração", """
-    <div class="card">
-        <h1>Área administrativa</h1>
-        <form method="POST">
-            <label>Senha do administrador</label>
-            <input name="senha" type="password" required>
-            <button>ENTRAR</button>
-        </form>
-    </div>
-    """)
-
-
-@app.route("/admin")
-def admin():
-    if not session.get("admin"):
-        return redirect("/admin/login")
-
-    with conectar() as banco:
-        usuarios = banco.execute(
-            "SELECT * FROM usuarios ORDER BY id DESC"
-        ).fetchall()
-
-    linhas = ""
-
-    for u in usuarios:
-        comprovante = escape(u["comprovante"] or "Não enviado")
-        acao = ""
-
-        if u["status"] != "aprovado":
-            acao = f"""
-            <form method="POST" action="/admin/aprovar/{u['id']}">
-                <button>Aprovar conta</button>
-            </form>
-            """
-
-        linhas += f"""
-        <tr>
-            <td>{escape(u['nome'])}</td>
-            <td>{escape(u['email'])}</td>
-            <td>{escape(u['status'])}</td>
-            <td>{comprovante}</td>
-            <td>{acao}</td>
-        </tr>
-        """
-
-    return pagina("Administração", f"""
-    <div class="card">
-        <h1>Gerenciar pagamentos</h1>
-        <p>Confira o recebimento no banco antes de aprovar qualquer conta.</p>
-        <div style="overflow-x:auto">
-        <table>
-            <tr>
-                <th>Nome</th><th>E-mail</th><th>Status</th>
-                <th>Comprovante</th><th>Ação</th>
-            </tr>
-            {linhas}
-        </table>
-        </div>
-    </div>
-    """)
-
-
-@app.route("/admin/aprovar/<int:id>", methods=["POST"])
-def aprovar(id):
-    if not session.get("admin"):
-        return redirect("/admin/login")
-
-    with conectar() as banco:
-        banco.execute(
-            "UPDATE usuarios SET status = 'aprovado' WHERE id = ?", (id,)
-        )
-
-    flash("Conta aprovada.")
-    return redirect("/admin")
+# TESTE DO SERVIDOR
+@app.route("/health")
+def health():
+    try:
+        with conectar() as db:
+            db.execute("SELECT 1")
+        return {"status": "ok", "banco": "conectado"}, 200
+    except Exception:
+        app.logger.exception("Falha no teste do banco")
+        return {"status": "erro", "banco": "indisponivel"}, 500
 
 
 if __name__ == "__main__":
-    criar_banco()
-    app.run(debug=True)
+    app.run(debug=False)
