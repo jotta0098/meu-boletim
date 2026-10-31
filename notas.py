@@ -114,16 +114,34 @@ def inicio():
                 if total_valor > 0 else 0
             )
 
+            # NOVO: soma as notas e os valores dos três trimestres
+            anual = db.execute("""
+                SELECT
+                    COALESCE(SUM(nota), 0) AS total_nota,
+                    COALESCE(SUM(valor), 0) AS total_valor
+                FROM notas
+                WHERE materia_id = ?
+                AND trimestre IN (1, 2, 3)
+            """, (materia["id"],)).fetchone()
+
             dados.append({
                 "id": materia["id"],
                 "nome": materia["nome"],
                 "avaliacoes": avaliacoes,
                 "total_nota": total_nota,
                 "total_valor": total_valor,
-                "porcentagem": porcentagem
+                "porcentagem": porcentagem,
+
+                # Dados do ano inteiro
+                "anual_nota": anual["total_nota"],
+                "anual_valor": anual["total_valor"]
             })
 
-    return render_template_string(HTML, materias=dados, trimestre=trimestre)
+    return render_template_string(
+        HTML,
+        materias=dados,
+        trimestre=trimestre
+    )
 
 
 @app.route("/salvar", methods=["POST"])
@@ -146,18 +164,32 @@ def salvar():
                 return redirect(url_for("inicio", trimestre=trimestre))
 
             for indice, avaliacao in enumerate(AVALIACOES):
-                nota_texto = request.form.get(f"nota_{indice}", "").strip()
-                valor_texto = request.form.get(f"valor_{indice}", "").strip()
+                nota_texto = request.form.get(
+                    f"nota_{indice}", ""
+                ).strip()
 
-                nota = float(nota_texto.replace(",", ".")) if nota_texto else 0
-                valor = float(valor_texto.replace(",", ".")) if valor_texto else 0
+                valor_texto = request.form.get(
+                    f"valor_{indice}", ""
+                ).strip()
+
+                nota = (
+                    float(nota_texto.replace(",", "."))
+                    if nota_texto else 0
+                )
+
+                valor = (
+                    float(valor_texto.replace(",", "."))
+                    if valor_texto else 0
+                )
 
                 if nota < 0 or valor < 0 or nota > valor:
                     flash(
                         f"Confira os valores de {avaliacao}. "
                         "A nota não pode ser maior que o valor da avaliação."
                     )
-                    return redirect(url_for("inicio", trimestre=trimestre))
+                    return redirect(
+                        url_for("inicio", trimestre=trimestre)
+                    )
 
                 db.execute("""
                     INSERT INTO notas
@@ -195,6 +227,7 @@ def adicionar_materia():
                 "INSERT INTO materias (nome) VALUES (?)",
                 (nome,)
             )
+
         flash("Matéria adicionada com sucesso!")
 
     except sqlite3.IntegrityError:
@@ -210,8 +243,15 @@ def adicionar_materia():
 @app.route("/excluir-materia/<int:materia_id>", methods=["POST"])
 def excluir_materia(materia_id):
     with conectar() as db:
-        db.execute("DELETE FROM notas WHERE materia_id = ?", (materia_id,))
-        db.execute("DELETE FROM materias WHERE id = ?", (materia_id,))
+        db.execute(
+            "DELETE FROM notas WHERE materia_id = ?",
+            (materia_id,)
+        )
+
+        db.execute(
+            "DELETE FROM materias WHERE id = ?",
+            (materia_id,)
+        )
 
     flash("Matéria excluída.")
     return redirect(url_for("inicio"))
@@ -222,7 +262,9 @@ def health():
     try:
         with conectar() as db:
             db.execute("SELECT 1")
+
         return {"status": "ok", "banco": "conectado"}
+
     except Exception:
         app.logger.exception("Erro no banco")
         return {"status": "erro"}, 500
@@ -356,6 +398,25 @@ button:hover { background: #1d4ed8; }
 
 .excluir { background: #991b1b; }
 
+.total-anual {
+    background: #172554;
+    border: 1px solid #2563eb;
+    padding: 15px;
+    border-radius: 8px;
+    margin-top: 12px;
+    line-height: 1.9;
+}
+
+.total-anual strong {
+    color: #93c5fd;
+}
+
+.pontos-anual {
+    color: #4ade80;
+    font-size: 20px;
+    font-weight: bold;
+}
+
 @media(max-width: 650px) {
     .grade { font-size: 12px; }
     .grade input { width: 55px; padding: 7px 3px; }
@@ -380,9 +441,20 @@ button:hover { background: #1d4ed8; }
 <h2>Selecione o trimestre</h2>
 
 <div class="trimestres">
-    <a href="/?trimestre=1" class="{{ 'ativo' if trimestre == 1 else '' }}">1º Trimestre</a>
-    <a href="/?trimestre=2" class="{{ 'ativo' if trimestre == 2 else '' }}">2º Trimestre</a>
-    <a href="/?trimestre=3" class="{{ 'ativo' if trimestre == 3 else '' }}">3º Trimestre</a>
+    <a href="/?trimestre=1"
+    class="{{ 'ativo' if trimestre == 1 else '' }}">
+        1º Trimestre
+    </a>
+
+    <a href="/?trimestre=2"
+    class="{{ 'ativo' if trimestre == 2 else '' }}">
+        2º Trimestre
+    </a>
+
+    <a href="/?trimestre=3"
+    class="{{ 'ativo' if trimestre == 3 else '' }}">
+        3º Trimestre
+    </a>
 </div>
 
 {% for materia in materias %}
@@ -391,8 +463,11 @@ button:hover { background: #1d4ed8; }
     <h2>{{ materia.nome }}</h2>
 
     <form method="POST" action="/salvar">
-        <input type="hidden" name="materia_id" value="{{ materia.id }}">
-        <input type="hidden" name="trimestre" value="{{ trimestre }}">
+        <input type="hidden" name="materia_id"
+        value="{{ materia.id }}">
+
+        <input type="hidden" name="trimestre"
+        value="{{ trimestre }}">
 
         <div style="overflow-x:auto">
         <table class="grade">
@@ -408,14 +483,18 @@ button:hover { background: #1d4ed8; }
             {% for avaliacao in materia.avaliacoes %}
                 <tr>
                     <td>{{ avaliacao.nome }}</td>
+
                     <td>
-                        <input type="number" name="nota_{{ avaliacao.indice }}"
+                        <input type="number"
+                        name="nota_{{ avaliacao.indice }}"
                         min="0" step="0.01" max="100"
                         value="{{ avaliacao.nota if avaliacao.nota else '' }}"
                         placeholder="0">
                     </td>
+
                     <td>
-                        <input type="number" name="valor_{{ avaliacao.indice }}"
+                        <input type="number"
+                        name="valor_{{ avaliacao.indice }}"
                         min="0" step="0.01" max="100"
                         value="{{ avaliacao.valor if avaliacao.valor else '' }}"
                         placeholder="0">
@@ -430,30 +509,95 @@ button:hover { background: #1d4ed8; }
     </form>
 
     <div class="total">
-        <strong>Total obtido:</strong>
+        <strong>Total obtido neste trimestre:</strong>
         {{ "%.2f"|format(materia.total_nota) }} pontos<br>
 
-        <strong>Total possível:</strong>
+        <strong>Total possível neste trimestre:</strong>
         {{ "%.2f"|format(materia.total_valor) }} pontos<br>
 
         <strong>Porcentagem:</strong>
         {{ "%.1f"|format(materia.porcentagem) }}%
     </div>
 
-    <form method="POST" action="/excluir-materia/{{ materia.id }}"
+    <form method="POST"
+    action="/excluir-materia/{{ materia.id }}"
     onsubmit="return confirm('Deseja excluir esta matéria e suas notas?')">
-        <button class="excluir" type="submit">Excluir matéria</button>
+
+        <button class="excluir" type="submit">
+            Excluir matéria
+        </button>
     </form>
 
 </div>
 {% endfor %}
 
+
+<!-- NOVA SEÇÃO: TOTAL DOS TRÊS TRIMESTRES -->
+
+<div class="card">
+    <h2>🏆 Total dos três trimestres</h2>
+
+    <p style="color:#cbd5e1">
+        Aqui aparece a soma de tudo que você conseguiu durante o ano
+        e o valor total das avaliações cadastradas.
+    </p>
+
+    <div style="overflow-x:auto">
+    <table class="grade">
+        <thead>
+            <tr>
+                <th>Matéria</th>
+                <th>Pontos conseguidos</th>
+                <th>Valor total</th>
+                <th>Porcentagem</th>
+            </tr>
+        </thead>
+
+        <tbody>
+        {% for materia in materias %}
+            <tr>
+                <td>
+                    <strong>{{ materia.nome }}</strong>
+                </td>
+
+                <td>
+                    <span class="pontos-anual">
+                        {{ "%.2f"|format(materia.anual_nota) }}
+                    </span>
+                </td>
+
+                <td>
+                    {{ "%.2f"|format(materia.anual_valor) }}
+                </td>
+
+                <td>
+                    {{ "%.1f"|format(
+                        (materia.anual_nota / materia.anual_valor * 100)
+                        if materia.anual_valor > 0 else 0
+                    ) }}%
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+
+    <p style="color:#cbd5e1;font-size:13px">
+        O total é atualizado automaticamente sempre que você salva
+        as notas de qualquer trimestre.
+    </p>
+</div>
+
+
 <div class="card">
     <h2>Adicionar nova matéria</h2>
 
-    <form method="POST" action="/adicionar-materia" class="adicionar">
+    <form method="POST" action="/adicionar-materia"
+    class="adicionar">
+
         <input type="text" name="nome"
         placeholder="Nome da matéria" required>
+
         <button type="submit">Adicionar</button>
     </form>
 </div>
